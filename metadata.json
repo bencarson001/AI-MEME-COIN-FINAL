@@ -1,0 +1,8 @@
+{
+  "name": "Remix Remix Remix GMGN AI Meme Coin Trader Pro newest",
+  "description": "Advanced AI analysis meme coin trader built on GMGN API with Alpha Explorer, Sniper Bot, Wallet Tracker, Interactive K-Line Charts, and Live/Shadow Execution Guard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
