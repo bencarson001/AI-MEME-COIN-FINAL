@@ -1640,7 +1640,18 @@ app.get('/api/gmgn/ai-rank/status/:id', (req, res) => {
   const id = req.params.id;
   const job = aiRankingProgress[id];
   if (!job) return res.status(404).json({ error: 'Job not found' });
-  res.json({ id, required: job.required, analyzed: job.analyzed, successful: job.successful, totalTried: job.totalTried, status: job.status, startedAt: job.startedAt });
+  const jobAny = job as any;
+  res.json({
+    id,
+    required: job.required,
+    analyzed: job.analyzed,
+    successful: job.successful,
+    totalTried: job.totalTried,
+    status: job.status,
+    startedAt: job.startedAt,
+    geminiUnavailable: !!jobAny.geminiUnavailable,
+    nextRetryInSeconds: jobAny.nextRetryInSeconds || null,
+  });
 });
 
 startServer();
