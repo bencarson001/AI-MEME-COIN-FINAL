@@ -19,6 +19,9 @@ const ALLOW_DEMO_DATA = String(process.env.ALLOW_DEMO_DATA || '').toLowerCase() 
 
 // In-memory application state — start empty (no demo data)
 let tokensStore: Token[] = [];
+let lastDiscoveryAt = 0;
+let isDiscovering = false;
+const DISCOVERY_CACHE_MS = 60 * 1000; // cache discovery results for 60s to avoid repeated heavy scans
 let walletSolBalance: number | null = null; // honest missing value by default
 let walletPositions: WalletPosition[] = [];
 let tradeOrders: TradeOrder[] = [];
@@ -452,6 +455,43 @@ app.get('/api/gmgn/tokens/alpha', async (req, res) => {
   const timeframe = (req.query.timeframe as Timeframe) || '15m';
 
   try {
+    // Use cached discovery results when available to avoid repeated heavy scanning
+    if (!isDiscovering && tokensStore.length > 0 && (Date.now() - lastDiscoveryAt) < DISCOVERY_CACHE_MS) {
+      console.log('[GMGN Scanner] Returning cached discovery results (within cache window)');
+      const validTokensCached = tokensStore.filter((t) => {
+        const riskScore = t.audit?.riskScore ?? 0;
+        const isNotCrashed = (t.momentum !== 'CRASHED') && (t.verdict !== 'AVOID') && (riskScore <= 75);
+        return (req.query.includeCrashed === 'true' || isNotCrashed);
+      });
+      const sortedCached = [...validTokensCached].sort((a, b) => {
+        const aScore = (typeof a.alphaScore === 'number' ? a.alphaScore : 0) * 0.6 + (a.priceChangePercent?.[timeframe] ?? 0) * 0.4;
+        const bScore = (typeof b.alphaScore === 'number' ? b.alphaScore : 0) * 0.6 + (b.priceChangePercent?.[timeframe] ?? 0) * 0.4;
+        return bScore - aScore;
+      });
+
+      let gmgnConfigCached: any = {};
+      const configPathCached = '/root/.config/gmgn/config.json';
+      if (fs.existsSync(configPathCached)) {
+        try { gmgnConfigCached = JSON.parse(fs.readFileSync(configPathCached, 'utf8')); } catch (e) {}
+      }
+
+      return res.json({
+        timeframe,
+        count: sortedCached.length,
+        scannedTokenCount: tokensStore.length,
+        marketCapFilter: 'Applied client-side filters as requested',
+        tokens: sortedCached,
+        updatedAt: new Date().toISOString(),
+        engine: 'GMGN Scanner (honest mode)',
+        dataFeed: 'DEX Aggregators & On-Chain RPCs',
+        executionMode: gmgnConfigCached.executionMode || executionMode,
+        apiKeyStatus: gmgnConfigCached.apiKey ? 'AUTHENTICATED' : 'PENDING_API_KEY',
+        boundWallet: gmgnConfigCached.walletAddress || null,
+        isGmgnLiveFeed: tokensStore.length > 0,
+      });
+    }
+
+    isDiscovering = true;
     console.log('[GMGN Scanner] Starting token discovery using external DEX / aggregator sources (honest counts).');
 
     const fetchWithTimeout = async (url: string, timeoutMs = 2500) => {
@@ -636,12 +676,15 @@ app.get('/api/gmgn/tokens/alpha', async (req, res) => {
 
     if (candidates.length > 0) {
       tokensStore = candidates;
+      lastDiscoveryAt = Date.now();
       console.log(`[GMGN Scanner] Token discovery complete. Found ${candidates.length} candidate tokens (source: DEX aggregators).`);
     } else {
       console.log('[GMGN Scanner] Token discovery returned no candidates from remote sources.');
     }
   } catch (err) {
     console.error('[GMGN Scanner] Error during token discovery:', err);
+  } finally {
+    isDiscovering = false;
   }
 
   const validTokens = tokensStore.filter((t) => {
