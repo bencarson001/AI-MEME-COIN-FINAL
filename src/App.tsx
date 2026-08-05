@@ -103,6 +103,23 @@ export default function App() {
   // State for AI rank progress
   const [aiRankProgress, setAiRankProgress] = useState<any>(null);
 
+  // Local countdown for Gemini retry: decrement nextRetryInSeconds every second while geminiUnavailable
+  useEffect(() => {
+    let timer: any = null;
+    if (aiRankProgress && aiRankProgress.geminiUnavailable && aiRankProgress.nextRetryInSeconds && aiRankProgress.nextRetryInSeconds > 0) {
+      timer = setInterval(() => {
+        setAiRankProgress((prev: any) => {
+          if (!prev || !prev.geminiUnavailable) return prev;
+          const next = Math.max(0, (prev.nextRetryInSeconds || 0) - 1);
+          return { ...prev, nextRetryInSeconds: next };
+        });
+      }, 1000);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [aiRankProgress && aiRankProgress.geminiUnavailable]);
+
   // Initial Load & Timeframe Change
   useEffect(() => {
     fetchAlphaTokens(selectedTimeframe);

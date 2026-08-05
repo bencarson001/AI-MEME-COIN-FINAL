@@ -1548,7 +1548,30 @@ async function startServer() {
 }
 
 // --- AI ranking progress store for background ranking jobs ---
-const aiRankingProgress: Record<string, { required: number; analyzed: number; successful: number; totalTried: number; status: 'running'|'done'|'failed'; startedAt: number }> = {};
+const JOB_STORE_FILE = path.join(process.cwd(), 'ai-rank-jobs.json');
+
+function loadJobsFromDisk(): Record<string, any> {
+  try {
+    if (fs.existsSync(JOB_STORE_FILE)) {
+      const raw = fs.readFileSync(JOB_STORE_FILE, 'utf8');
+      return JSON.parse(raw || '{}') || {};
+    }
+  } catch (e) {
+    console.warn('Failed loading job store:', e);
+  }
+  return {};
+}
+
+function saveJobsToDisk(jobs: Record<string, any>) {
+  try {
+    fs.writeFileSync(JOB_STORE_FILE, JSON.stringify(jobs, null, 2));
+  } catch (e) {
+    console.warn('Failed saving job store:', e);
+  }
+}
+
+let aiRankingProgress: Record<string, { required: number; analyzed: number; successful: number; totalTried: number; status: 'running'|'done'|'failed'; startedAt: number; geminiUnavailable?: boolean; nextRetryInSeconds?: number }> = loadJobsFromDisk();
+
 
 // Start a background AI ranking job. Uses current tokensStore as seed and will re-seed by calling the alpha endpoint if not enough ranked items are produced.
 app.post('/api/gmgn/ai-rank/start', async (req, res) => {
@@ -1574,9 +1597,10 @@ app.post('/api/gmgn/ai-rank/start', async (req, res) => {
           if (aiRankingProgress[id].successful >= required) break;
 
           aiRankingProgress[id].totalTried += 1;
+          saveJobsToDisk(aiRankingProgress);
           try {
             const body = JSON.stringify({ tokenAddress: t.address, tokenSymbol: t.symbol });
-            const r = await fetch(`http://localhost:${PORT}/api/gemini/analyze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, timeout: 20000 });
+            const r = await fetch(`http://localhost:${PORT}/api/gemini/analyze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
             if (r && r.ok) {
               const json = await r.json();
 
@@ -1588,24 +1612,29 @@ app.post('/api/gmgn/ai-rank/start', async (req, res) => {
                   if (typeof json.analysis.score === 'number') {
                     t.alphaScore = Math.max(0, Math.min(100, Number(json.analysis.score) || t.alphaScore || 0));
                     aiRankingProgress[id].successful += 1;
+                    saveJobsToDisk(aiRankingProgress);
                   }
                 }
 
                 // expose quota info on the job and pause for the suggested time
                 (aiRankingProgress[id] as any).geminiUnavailable = true;
                 (aiRankingProgress[id] as any).nextRetryInSeconds = json.nextRetrySeconds;
+                saveJobsToDisk(aiRankingProgress);
+
                 // wait for the retry window (plus small buffer)
                 await new Promise((r2) => setTimeout(r2, (json.nextRetrySeconds + 1) * 1000));
 
                 // clear geminiUnavailable flag and continue
                 (aiRankingProgress[id] as any).geminiUnavailable = false;
                 delete (aiRankingProgress[id] as any).nextRetryInSeconds;
+                saveJobsToDisk(aiRankingProgress);
               } else {
                 if (json && json.analysis && typeof json.analysis.score === 'number') {
                   // attach analysis and update alphaScore
                   t.aiAnalysis = json.analysis;
                   t.alphaScore = Math.max(0, Math.min(100, Number(json.analysis.score) || t.alphaScore || 0));
                   aiRankingProgress[id].successful += 1;
+                  saveJobsToDisk(aiRankingProgress);
                 }
               }
             }
@@ -1613,6 +1642,7 @@ app.post('/api/gmgn/ai-rank/start', async (req, res) => {
             // ignore individual failures — continue to next token
           } finally {
             aiRankingProgress[id].analyzed += 1;
+            saveJobsToDisk(aiRankingProgress);
           }
 
           // small throttle
@@ -1628,8 +1658,10 @@ app.post('/api/gmgn/ai-rank/start', async (req, res) => {
       }
 
       aiRankingProgress[id].status = 'done';
+      saveJobsToDisk(aiRankingProgress);
     } catch (ex) {
       aiRankingProgress[id].status = 'failed';
+      saveJobsToDisk(aiRankingProgress);
     }
   })();
 

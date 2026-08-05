@@ -77,6 +77,8 @@ export interface Token {
   // AI Insights
   aiReasoning: string[];
   aiSentiment: 'BULLISH' | 'NEUTRAL' | 'BEARISH' | 'HIGH_RISK';
+  // Optional detailed AI analysis attached after Gemini/enrichment
+  aiAnalysis?: AIAnalysisResult;
 }
 
 export interface AlphaSettingsConfig {
