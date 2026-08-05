@@ -1277,8 +1277,34 @@ Provide a concise JSON response strictly matching this schema:
         return res.json({ token, analysis: parsed });
       }
     } catch (geminiErr: any) {
-      console.warn('Gemini API unavailable or failed:', geminiErr?.message || geminiErr);
-      return res.json(getFallbackAnalysis());
+      // Detect quota / retry info when available and surface it to callers so background jobs can pause
+      try {
+        const errBody = geminiErr?.response || geminiErr?.body || geminiErr;
+        let nextRetrySeconds: number | null = null;
+        // Gemeni client may embed RetryInfo in error.details; try to parse common shapes
+        if (geminiErr?.status === 429 && geminiErr?.details) {
+          const retryDetail = (geminiErr.details || []).find((d: any) => d['@type'] && d['@type'].includes('RetryInfo'));
+          if (retryDetail && retryDetail.retryDelay) {
+            // retryDelay expects a string like '55s'
+            const m = String(retryDetail.retryDelay).match(/(\d+)s/);
+            if (m) nextRetrySeconds = parseInt(m[1], 10);
+          }
+        }
+
+        console.warn('Gemini API unavailable or failed:', geminiErr?.message || geminiErr);
+
+        const fallback = getFallbackAnalysis();
+        const resp: any = { token, analysis: fallback.analysis };
+        if (nextRetrySeconds !== null) {
+          resp.geminiUnavailable = true;
+          resp.nextRetrySeconds = nextRetrySeconds;
+        }
+
+        return res.json(resp);
+      } catch (inner) {
+        console.warn('Gemini error parsing failed:', inner);
+        return res.json(getFallbackAnalysis());
+      }
     }
 
     return res.json(getFallbackAnalysis());
@@ -1553,15 +1579,38 @@ app.post('/api/gmgn/ai-rank/start', async (req, res) => {
             const r = await fetch(`http://localhost:${PORT}/api/gemini/analyze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, timeout: 20000 });
             if (r && r.ok) {
               const json = await r.json();
-              if (json && json.analysis && typeof json.analysis.score === 'number') {
-                // attach analysis and update alphaScore
-                t.aiAnalysis = json.analysis;
-                t.alphaScore = Math.max(0, Math.min(100, Number(json.analysis.score) || t.alphaScore || 0));
-                aiRankingProgress[id].successful += 1;
+
+              // If Gemini signalled quota exhaustion, respect suggested retry delay and pause the job
+              if (json && json.geminiUnavailable && typeof json.nextRetrySeconds === 'number') {
+                // attach fallback analysis so UI has something to show
+                if (json.analysis) {
+                  t.aiAnalysis = json.analysis;
+                  if (typeof json.analysis.score === 'number') {
+                    t.alphaScore = Math.max(0, Math.min(100, Number(json.analysis.score) || t.alphaScore || 0));
+                    aiRankingProgress[id].successful += 1;
+                  }
+                }
+
+                // expose quota info on the job and pause for the suggested time
+                (aiRankingProgress[id] as any).geminiUnavailable = true;
+                (aiRankingProgress[id] as any).nextRetryInSeconds = json.nextRetrySeconds;
+                // wait for the retry window (plus small buffer)
+                await new Promise((r2) => setTimeout(r2, (json.nextRetrySeconds + 1) * 1000));
+
+                // clear geminiUnavailable flag and continue
+                (aiRankingProgress[id] as any).geminiUnavailable = false;
+                delete (aiRankingProgress[id] as any).nextRetryInSeconds;
+              } else {
+                if (json && json.analysis && typeof json.analysis.score === 'number') {
+                  // attach analysis and update alphaScore
+                  t.aiAnalysis = json.analysis;
+                  t.alphaScore = Math.max(0, Math.min(100, Number(json.analysis.score) || t.alphaScore || 0));
+                  aiRankingProgress[id].successful += 1;
+                }
               }
             }
           } catch (e) {
-            // ignore individual failures
+            // ignore individual failures — continue to next token
           } finally {
             aiRankingProgress[id].analyzed += 1;
           }
