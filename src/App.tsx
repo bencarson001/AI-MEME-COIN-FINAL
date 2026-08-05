@@ -73,6 +73,46 @@ export default function App() {
     }
   };
 
+  // Start AI ranking job and poll progress; returns progress id
+  const startAiRanking = async (required = 20) => {
+    try {
+      const startRes = await fetch(`/api/gmgn/ai-rank/start?required=${required}`, { method: 'POST' });
+      if (!startRes.ok) return null;
+      const j = await startRes.json();
+      const id = j.progressId as string;
+      // poll status
+      const poll = setInterval(async () => {
+        try {
+          const st = await fetch(`/api/gmgn/ai-rank/status/${id}`);
+          if (!st.ok) return;
+          const sjson = await st.json();
+          setAiRankProgress(sjson);
+          if (sjson.status === 'done' || sjson.status === 'failed') {
+            clearInterval(poll);
+            // refresh tokens to pick up updated alphaScore
+            fetchAlphaTokens(selectedTimeframe);
+          }
+        } catch (e) {}
+      }, 2000);
+      return id;
+    } catch (e) {
+      return null;
+    }
+  };
+
+  // State for AI rank progress
+  const [aiRankProgress, setAiRankProgress] = useState<any>(null);
+
+  // Initial Load & Timeframe Change
+  useEffect(() => {
+    fetchAlphaTokens(selectedTimeframe);
+    fetchSniperStatus();
+    fetchWalletState();
+    fetchSiteAppearance();
+    // start AI ranking in background for top 20
+    (async () => { const pid = await startAiRanking(20); if (pid) console.log('AI ranking started', pid); })();
+  }, [selectedTimeframe]);
+
   // Fetch Sniper Scan Status
   const fetchSniperStatus = async () => {
     try {

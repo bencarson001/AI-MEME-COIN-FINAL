@@ -51,6 +51,7 @@ interface AlphaExplorerProps {
   onAnalyzeAi: (token: Token) => void;
   onRefreshData?: () => void;
   isRefreshing?: boolean;
+  aiRankProgress?: any;
 }
 
 export const AlphaExplorer: React.FC<AlphaExplorerProps> = ({
@@ -62,6 +63,7 @@ export const AlphaExplorer: React.FC<AlphaExplorerProps> = ({
   onAnalyzeAi,
   onRefreshData,
   isRefreshing,
+  aiRankProgress,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterSafeOnly, setFilterSafeOnly] = useState(false);
@@ -244,6 +246,15 @@ export const AlphaExplorer: React.FC<AlphaExplorerProps> = ({
     <div className="space-y-6">
       {/* Header Banner & Timeframe Selector */}
       <div className="bg-gradient-to-br from-slate-900 via-slate-900/90 to-slate-950 p-5 rounded-2xl border border-slate-800 shadow-xl relative overflow-hidden">
++        {/* AI Rank Progress Bar */}
++        {aiRankProgress && (
++          <div className="mb-3">
++            <div className="text-xs text-slate-300">AI Ranking Progress: {aiRankProgress.successful}/{aiRankProgress.required} ranked</div>
++            <div className="w-full bg-slate-800 rounded-full h-2 mt-1 overflow-hidden">
++              <div className="bg-emerald-400 h-2" style={{ width: `${Math.min(100, (aiRankProgress.successful / Math.max(1, aiRankProgress.required)) * 100)}%` }} />
++            </div>
++          </div>
++        )}
         <div className="absolute top-0 right-0 w-96 h-96 bg-emerald-500/5 rounded-full blur-3xl -z-0 pointer-events-none" />
 
         <div className="relative z-10 flex flex-wrap items-center justify-between gap-4">

@@ -561,7 +561,19 @@ app.get('/api/gmgn/tokens/alpha', async (req, res) => {
         marketCapUsd,
         volume24hUsd: volume24h,
         ageMinutes: pair.ageMinutes ?? null,
-        alphaScore: null,
+        // Compute a lightweight heuristic alphaScore so the frontend shows ranked AI-like results immediately
+        // Components: data quality (0-100), buy pressure (0-100), liquidity (log-scaled to 0-100), short-term price change (15m mapped to 0-100)
+        alphaScore: ((): number => {
+          const dq = (typeof dataQualityScore === 'number') ? dataQualityScore : 0;
+          const buy = (typeof buyPressurePercent === 'number') ? buyPressurePercent : 50;
+          const liq = (typeof liquidityUsd === 'number' && liquidityUsd > 0) ? Math.min(100, Math.log10(liquidityUsd + 1) * 16) : 0;
+          const pct15 = (pair.priceChange?.m15 !== undefined && pair.priceChange?.m15 !== null) ? Number(pair.priceChange.m15) : 0;
+          // map short-term move into a 0-100 range, with -50% -> 0, +150% -> 100
+          const priceNorm = Math.max(-50, Math.min(150, pct15));
+          const priceScore = Math.max(0, Math.min(100, ((priceNorm + 50) / 2)));
+          const score = Math.round(0.45 * dq + 0.25 * buy + 0.2 * liq + 0.1 * priceScore);
+          return Math.max(0, Math.min(100, score));
+        })(),
         confidence: null,
         confidenceScore: null,
         dataQualityScore,
@@ -1508,5 +1520,78 @@ async function startServer() {
     console.log(`🚀 GMGN AI Trader Server running at http://0.0.0.0:${PORT} (ALLOW_DEMO_DATA=${ALLOW_DEMO_DATA})`);
   });
 }
+
+// --- AI ranking progress store for background ranking jobs ---
+const aiRankingProgress: Record<string, { required: number; analyzed: number; successful: number; totalTried: number; status: 'running'|'done'|'failed'; startedAt: number }> = {};
+
+// Start a background AI ranking job. Uses current tokensStore as seed and will re-seed by calling the alpha endpoint if not enough ranked items are produced.
+app.post('/api/gmgn/ai-rank/start', async (req, res) => {
+  const required = parseInt(String(req.query.required || req.body.required || '20'), 10) || 20;
+  const id = 'job_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,8);
+  aiRankingProgress[id] = { required, analyzed: 0, successful: 0, totalTried: 0, status: 'running', startedAt: Date.now() };
+
+  // Kick off background process (don't await)
+  (async () => {
+    try {
+      const maxAttempts = 6; // repull up to 6 times (200*6 = 1200 tokens)
+      let attempts = 0;
+      while (aiRankingProgress[id].successful < required && attempts < maxAttempts) {
+        attempts++;
+        // ensure tokensStore has candidates; if empty, trigger local discovery
+        if (!tokensStore || tokensStore.length === 0) {
+          try { await fetch(`http://localhost:${PORT}/api/gmgn/tokens/alpha?timeframe=15m`); } catch (e) {}
+        }
+
+        // analyze tokens sequentially to simplify progress tracking and avoid rate limits
+        for (const t of tokensStore) {
+          // stop if we've already satisfied requirement
+          if (aiRankingProgress[id].successful >= required) break;
+
+          aiRankingProgress[id].totalTried += 1;
+          try {
+            const body = JSON.stringify({ tokenAddress: t.address, tokenSymbol: t.symbol });
+            const r = await fetch(`http://localhost:${PORT}/api/gemini/analyze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, timeout: 20000 });
+            if (r && r.ok) {
+              const json = await r.json();
+              if (json && json.analysis && typeof json.analysis.score === 'number') {
+                // attach analysis and update alphaScore
+                t.aiAnalysis = json.analysis;
+                t.alphaScore = Math.max(0, Math.min(100, Number(json.analysis.score) || t.alphaScore || 0));
+                aiRankingProgress[id].successful += 1;
+              }
+            }
+          } catch (e) {
+            // ignore individual failures
+          } finally {
+            aiRankingProgress[id].analyzed += 1;
+          }
+
+          // small throttle
+          await new Promise((r) => setTimeout(r, 300));
+        }
+
+        // if still short, attempt to repull fresh candidates by calling the alpha discovery endpoint
+        if (aiRankingProgress[id].successful < required) {
+          try { await fetch(`http://localhost:${PORT}/api/gmgn/tokens/alpha?timeframe=15m`); } catch (e) {}
+          // allow a short pause before next pass
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+      }
+
+      aiRankingProgress[id].status = 'done';
+    } catch (ex) {
+      aiRankingProgress[id].status = 'failed';
+    }
+  })();
+
+  res.json({ progressId: id, required, status: 'started' });
+});
+
+app.get('/api/gmgn/ai-rank/status/:id', (req, res) => {
+  const id = req.params.id;
+  const job = aiRankingProgress[id];
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+  res.json({ id, required: job.required, analyzed: job.analyzed, successful: job.successful, totalTried: job.totalTried, status: job.status, startedAt: job.startedAt });
+});
 
 startServer();
