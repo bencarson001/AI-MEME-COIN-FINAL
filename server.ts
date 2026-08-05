@@ -525,7 +525,8 @@ app.get('/api/gmgn/tokens/alpha', async (req, res) => {
 
     const activePairs = Array.from(mintMap.values());
 
-    const candidates: Token[] = activePairs.slice(0, 200).map((pair: any, index: number) => {
+    // Build candidate objects for all active pairs, score them, then pick the top 200 by dataQualityScore (fallback to marketCap)
+    const allCandidates: Token[] = activePairs.map((pair: any, index: number) => {
       const symbol = pair.baseToken?.symbol || `TOKEN${index}`;
       const name = pair.baseToken?.name || symbol;
       const priceUsd = (pair.priceUsd !== undefined && pair.priceUsd !== null) ? Number(pair.priceUsd) : null;
@@ -609,6 +610,17 @@ app.get('/api/gmgn/tokens/alpha', async (req, res) => {
         aiSentiment: null,
       } as Token;
     });
+
+    const candidates: Token[] = allCandidates
+      .sort((a, b) => {
+        const dqA = (typeof a.dataQualityScore === 'number') ? a.dataQualityScore : 0;
+        const dqB = (typeof b.dataQualityScore === 'number') ? b.dataQualityScore : 0;
+        if (dqB !== dqA) return dqB - dqA;
+        const mcA = (typeof a.marketCapUsd === 'number') ? a.marketCapUsd : 0;
+        const mcB = (typeof b.marketCapUsd === 'number') ? b.marketCapUsd : 0;
+        return mcB - mcA;
+      })
+      .slice(0, 200);
 
     if (candidates.length > 0) {
       tokensStore = candidates;
