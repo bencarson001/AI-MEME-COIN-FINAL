@@ -349,6 +349,7 @@ export default function App() {
               fetchSniperStatus();
             }}
             isRefreshing={isRefreshing}
+            aiRankProgress={aiRankProgress}
           />
         )}
 
